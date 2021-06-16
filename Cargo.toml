@@ -9,6 +9,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 osmquadtree = { git = "https://github.com/jharris2268/osmquadtree-rust.git", branch = "main" }
+simple-protocolbuffers = { git = "https://github.com/jharris2268/simple-protocolbuffers.git", branch = "main" }
+channelled-callbacks = { git = "https://github.com/jharris2268/channelled-callbacks.git", branch = "main" }
+
 
 [dependencies.pyo3]
 version = "0.13.2"
