@@ -3,6 +3,7 @@ use pyo3::{wrap_pyfunction,PyObjectProtocol};
 use pyo3::types::{PyBytes,PyList};
 use pyo3::exceptions::*;
 use std::sync::Arc;
+//use std::ops::Drop;
 
 #[pyclass]
 pub struct Quadtree {
@@ -122,7 +123,12 @@ impl PyObjectProtocol for PrimitiveBlock {
         Ok(format!("PrimitiveBlock {}", self.inner.index))
     }
 }
-
+/*
+impl Drop for PrimitiveBlock {
+    fn drop(&mut self) {
+        println!("drop PrimitiveBlock {}", self.inner.index)
+    }
+}*/
 
 fn prep_tags(py: Python, tgs: &Vec<osmquadtree::elements::Tag>) -> PyResult<PyObject> {
     let res = PyList::empty(py);
