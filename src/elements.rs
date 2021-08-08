@@ -2,6 +2,8 @@ use pyo3::prelude::*;
 use pyo3::{wrap_pyfunction,PyObjectProtocol};
 use pyo3::types::{PyBytes,PyList, PyTuple};
 use pyo3::exceptions::*;
+use pyo3::sequence::PySequenceProtocol;
+
 use std::sync::Arc;
 //use std::ops::Drop;
 
@@ -68,6 +70,39 @@ fn prep_which<T>(vv: &Vec<T>, mut which: i64) -> PyResult<usize> {
 
 #[pymethods]
 impl PrimitiveBlock {
+    
+    #[new]
+    pub fn from_elements(py: Python, index: i64, location: u64, quadtree: &Quadtree, start_date: i64, end_date: i64, elements: Vec<PyObject>) -> PyResult<PrimitiveBlock> {
+        
+        let mut pb = osmquadtree::elements::PrimitiveBlock::new(index, location);
+        pb.quadtree = quadtree.inner.clone();
+        pb.start_date = start_date;
+        pb.end_date = end_date;
+        
+        for e in &elements {
+            || -> PyResult<()> {
+                let v1: PyResult<Node> = e.extract(py);
+                match v1 {
+                    Ok(ref n) => { pb.nodes.push(n.get_ele().clone()); return Ok(()); },
+                    Err(_) => { }
+                }
+                let v2: PyResult<Way> = e.extract(py);
+                match v2 {
+                    Ok(ref n) => { pb.ways.push(n.get_ele().clone()); return Ok(()); },
+                    Err(_) => { }
+                }
+                let v3: PyResult<Relation> = e.extract(py);
+                match v3 {
+                    Ok(ref n) => { pb.relations.push(n.get_ele().clone()); return Ok(()); },
+                    Err(_) => { }
+                }
+                Err(PyValueError::new_err("unexpected type"))
+            }()?;
+        }
+        Ok(PrimitiveBlock{inner: Arc::new(pb) })
+    }
+            
+    
     #[getter]
     pub fn index(&self) -> PyResult<i64> { Ok(self.inner.index) }
     
@@ -89,17 +124,20 @@ impl PrimitiveBlock {
     pub fn num_relations(&self) -> PyResult<i64> { Ok(self.inner.relations.len() as i64) }
     
     pub fn node_at(&self, which: i64) -> PyResult<Node> {
-            
-        Ok(Node{inner: self.inner.clone(), which: prep_which(&self.inner.nodes, which)?})
+        
+        Node::as_view(self.inner.clone(), prep_which(&self.inner.nodes, which)?)
+        
+        //Ok(Node{inner: self.inner.clone(), which: prep_which(&self.inner.nodes, which)?})
     }
     pub fn way_at(&self, which: i64) -> PyResult<Way> {
         
-            
-        Ok(Way{inner: self.inner.clone(), which: prep_which(&self.inner.ways, which)?})
+        Way::as_view(self.inner.clone(), prep_which(&self.inner.ways, which)?)
+        //Ok(Way{inner: self.inner.clone(), which: prep_which(&self.inner.ways, which)?})
     }
     pub fn relation_at(&self, which: i64) -> PyResult<Relation> {
         
-        Ok(Relation{inner: self.inner.clone(), which: prep_which(&self.inner.relations, which)?})
+        Relation::as_view(self.inner.clone(), prep_which(&self.inner.relations, which)?)
+        //Ok(Relation{inner: self.inner.clone(), which: prep_which(&self.inner.relations, which)?})
         
     }
     
@@ -147,97 +185,132 @@ fn prep_tags(py: Python, tgs: &Vec<osmquadtree::elements::Tag>) -> PyResult<PyOb
     Ok(res.into())
 }
 
-fn prep_info(py: Python, info: &osmquadtree::elements::Info) -> PyResult<PyObject> {
-    let mut res = Vec::new();
-    res.push(info.version.into_py(py));
-    res.push(info.changeset.into_py(py));
-    res.push(info.timestamp.into_py(py));
-    res.push(info.user.clone().into_py(py));
-    res.push(info.user_id.into_py(py));
-    Ok(PyTuple::new(py,res).into())
+fn prep_info(py: Python, info_op: &Option<osmquadtree::elements::Info>) -> PyResult<PyObject> {
+    match info_op {
+        Some(info) => {
+            
+            let mut res = Vec::new();
+            res.push(info.version.into_py(py));
+            res.push(info.changeset.into_py(py));
+            res.push(info.timestamp.into_py(py));
+            res.push(info.user.clone().into_py(py));
+            res.push(info.user_id.into_py(py));
+            Ok(PyTuple::new(py,res).into())
+        },
+        None => Ok(py.None())
+    }
 }
 
 fn prep_node_tuple(py: Python, n: &osmquadtree::elements::Node) -> PyResult<PyObject> {
-     
-    let mut v = Vec::new();
-    v.push("node".into_py(py));
-    v.push(n.id.into_py(py));
-    match &n.info {
-        Some(i) => {
-            v.push(prep_info(py, &i)?);
-        },
-        None => {
-            v.push(py.None());
-        }
-    }
+    Ok((
+        "node",
+        changetype_str(&n.changetype),
+        n.id,
+        prep_info(py, &n.info)?,
+        prep_tags(py, &n.tags)?,
+        (n.lon, n.lat),
+        Quadtree::new(n.quadtree)
+    ).into_py(py))
     
-    v.push(prep_tags(py, &n.tags)?);
-    v.push(n.lon.into_py(py));
-    v.push(n.lat.into_py(py));
-    v.push(Quadtree::new(n.quadtree).into_py(py));
-    
-    Ok(PyTuple::new(py,v).into())
 }
 fn prep_way_tuple(py: Python, n: &osmquadtree::elements::Way) -> PyResult<PyObject> {
-     
-    let mut v = Vec::new();
-    v.push("way".into_py(py));
-    v.push(n.id.into_py(py));
-    match &n.info {
-        Some(i) => {
-            v.push(prep_info(py, &i)?);
-        },
-        None => {
-            v.push(py.None());
-        }
-    }
+    Ok((
+        "way",
+        changetype_str(&n.changetype),
+        n.id,
+        prep_info(py, &n.info)?,
+        prep_tags(py, &n.tags)?,
+        n.refs.clone(),
+        Quadtree::new(n.quadtree)
+    ).into_py(py))
     
-    v.push(prep_tags(py, &n.tags)?);
-    v.push(n.refs.clone().into_py(py));
-    
-    v.push(Quadtree::new(n.quadtree).into_py(py));
-    
-    Ok(PyTuple::new(py,v).into())
 }
 fn prep_relation_tuple(py: Python, n: &osmquadtree::elements::Relation) -> PyResult<PyObject> {
-     
-    let mut v = Vec::new();
-    v.push("relation".into_py(py));
-    v.push(n.id.into_py(py));
-    match &n.info {
-        Some(i) => {
-            v.push(prep_info(py, &i)?);
-        },
-        None => {
-            v.push(py.None());
-        }
-    }
+    Ok((
+        "relation",
+        changetype_str(&n.changetype),
+        n.id,
+        prep_info(py, &n.info)?,
+        prep_tags(py, &n.tags)?,
+        prep_mems(py, &n.members)?,
+        Quadtree::new(n.quadtree)
+    ).into_py(py)) 
     
-    v.push(prep_tags(py, &n.tags)?);
-    v.push(prep_mems(py, &n.members)?);
-    v.push(Quadtree::new(n.quadtree).into_py(py));
-    
-    Ok(PyTuple::new(py,v).into())
 }
 
+#[derive(Clone)]
+enum NodeItem {
+    View((Arc<osmquadtree::elements::PrimitiveBlock>,usize)),
+    Item(osmquadtree::elements::Node)
+}
+
+
 #[pyclass]
+#[derive(Clone)]
 pub struct Node {
-    inner: Arc<osmquadtree::elements::PrimitiveBlock>,
-    which: usize,
+    
+    inner: NodeItem
+    
+    
+    //inner: Arc<osmquadtree::elements::PrimitiveBlock>,
+    //which: usize,
 }
 
 impl Node {
-    fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Node {
-        &self.inner.nodes[self.which]
+    
+    pub fn as_view(pb: Arc<osmquadtree::elements::PrimitiveBlock>, which: usize) -> PyResult<Node> {
+        Ok(Node{inner: NodeItem::View((pb.clone(),which))})
+    }
+    pub fn as_item(nd: osmquadtree::elements::Node) -> PyResult<Node> {
+        Ok(Node{inner: NodeItem::Item(nd)})
+    }
+    pub fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Node {
+        match self.inner {
+            NodeItem::View((ref pb, wh)) => &pb.nodes[wh],
+            NodeItem::Item(ref nd) => &nd
+        }
+        //&self.inner.nodes[self.which]
     }
     
-    fn get_info<'a>(&'a self) -> PyResult<&'a osmquadtree::elements::Info> {
+    pub fn get_info<'a>(&'a self) -> PyResult<&'a osmquadtree::elements::Info> {
         self.get_ele().info.as_ref().ok_or_else(|| PyValueError::new_err("no info present"))
     }
 }
 
 #[pymethods]
 impl Node {
+    pub fn clone(&self) -> PyResult<Node> {
+        Node::as_item(self.get_ele().clone())
+    }
+    
+    #[new]
+    pub fn new(
+        id: i64, changetype: &str,
+        version: i64, timestamp: i64, changeset: i64, user_id: i64, user: &str,
+        tags: Vec<(String,String)>,
+        lon: i32, lat: i32, quadtree: &Quadtree) -> PyResult<Node> {
+            
+        let mut nd = osmquadtree::elements::Node::new(id, changetype_from_str(changetype)?);
+        let mut inf = osmquadtree::elements::Info::new();
+        inf.version = version;
+        inf.timestamp = timestamp;
+        inf.changeset = changeset;
+        inf.user_id = user_id;
+        inf.user = String::from(user);
+        nd.info = Some(inf);
+        for (k,v) in tags {
+            nd.tags.push(osmquadtree::elements::Tag::new(k,v));
+        }
+        nd.lon = lon;
+        nd.lat = lat;
+        nd.quadtree = quadtree.inner.clone();
+        Node::as_item(nd)
+    }
+    
+    pub fn as_tuple(&self, py: Python) -> PyResult<PyObject> {
+        prep_node_tuple(py, self.get_ele())
+    }
+    
     #[getter]
     pub fn id(&self) -> PyResult<i64> { Ok(self.get_ele().id) }
     
@@ -286,16 +359,44 @@ impl PyObjectProtocol for Node {
         Ok(format!("Node {}", self.get_ele().id))
     }
 }
+
+#[derive(Clone)]
+enum WayItem {
+    View((Arc<osmquadtree::elements::PrimitiveBlock>,usize)),
+    Item(osmquadtree::elements::Way)
+}
+
+
+
 #[pyclass]
+#[derive(Clone)]
 pub struct Way {
-    inner: Arc<osmquadtree::elements::PrimitiveBlock>,
-    which: usize,
+    
+    inner: WayItem,
+    
+    //inner: Arc<osmquadtree::elements::PrimitiveBlock>,
+    //which: usize,
 }
 
 impl Way {
-    fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Way {
-        &self.inner.ways[self.which]
+    
+    pub fn as_view(pb: Arc<osmquadtree::elements::PrimitiveBlock>, which: usize) -> PyResult<Way> {
+        Ok(Way{inner: WayItem::View((pb.clone(),which))})
     }
+    pub fn as_item(nd: osmquadtree::elements::Way) -> PyResult<Way> {
+        Ok(Way{inner: WayItem::Item(nd)})
+    }
+    pub fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Way {
+        match self.inner {
+            WayItem::View((ref pb, wh)) => &pb.ways[wh],
+            WayItem::Item(ref nd) => &nd
+        }
+        //&self.inner.nodes[self.which]
+    }
+    
+    /*fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Way {
+        &self.inner.ways[self.which]
+    }*/
     
     fn get_info<'a>(&'a self) -> PyResult<&'a osmquadtree::elements::Info> {
         self.get_ele().info.as_ref().ok_or_else(|| PyValueError::new_err("no info present"))
@@ -305,6 +406,38 @@ impl Way {
 
 #[pymethods]
 impl Way {
+    
+    pub fn clone(&self) -> PyResult<Way> {
+        Way::as_item(self.get_ele().clone())
+    }
+    
+    #[new]
+    pub fn new(
+        id: i64, changetype: &str,
+        version: i64, timestamp: i64, changeset: i64, user_id: i64, user: &str,
+        tags: Vec<(String,String)>,
+        refs: Vec<i64>, quadtree: &Quadtree) -> PyResult<Way> {
+            
+        let mut wy = osmquadtree::elements::Way::new(id, changetype_from_str(changetype)?);
+        let mut inf = osmquadtree::elements::Info::new();
+        inf.version = version;
+        inf.timestamp = timestamp;
+        inf.changeset = changeset;
+        inf.user_id = user_id;
+        inf.user = String::from(user);
+        wy.info = Some(inf);
+        for (k,v) in tags {
+            wy.tags.push(osmquadtree::elements::Tag::new(k,v));
+        }
+        wy.refs=refs;
+        wy.quadtree = quadtree.inner.clone();
+        Way::as_item(wy)
+    }
+    
+    pub fn as_tuple(&self, py: Python) -> PyResult<PyObject> {
+        prep_way_tuple(py, self.get_ele())
+    }
+    
     #[getter]
     pub fn id(&self) -> PyResult<i64> { Ok(self.get_ele().id) }
     #[getter]
@@ -351,17 +484,39 @@ impl PyObjectProtocol for Way {
     
 }
 
+#[derive(Clone)]
+enum RelationItem {
+    View((Arc<osmquadtree::elements::PrimitiveBlock>,usize)),
+    Item(osmquadtree::elements::Relation)
+}
+
 
 #[pyclass]
+#[derive(Clone)]
 pub struct Relation {
-    inner: Arc<osmquadtree::elements::PrimitiveBlock>,
-    which: usize,
+    inner: RelationItem
+    //inner: Arc<osmquadtree::elements::PrimitiveBlock>,
+    //which: usize,
 }
 
 impl Relation {
-    fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Relation {
-        &self.inner.relations[self.which]
+    pub fn as_view(pb: Arc<osmquadtree::elements::PrimitiveBlock>, which: usize) -> PyResult<Relation> {
+        Ok(Relation{inner: RelationItem::View((pb.clone(),which))})
     }
+    pub fn as_item(nd: osmquadtree::elements::Relation) -> PyResult<Relation> {
+        Ok(Relation{inner: RelationItem::Item(nd)})
+    }
+    pub fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Relation {
+        match self.inner {
+            RelationItem::View((ref pb, wh)) => &pb.relations[wh],
+            RelationItem::Item(ref nd) => &nd
+        }
+        //&self.inner.nodes[self.which]
+    }
+    
+    /*fn get_ele<'a>(&'a self) -> &'a osmquadtree::elements::Relation {
+        &self.inner.relations[self.which]
+    }*/
     fn get_info<'a>(&'a self) -> PyResult<&'a osmquadtree::elements::Info> {
         self.get_ele().info.as_ref().ok_or_else(|| PyValueError::new_err("no info present"))
     }
@@ -373,6 +528,16 @@ fn mem_role_str(e: &osmquadtree::elements::ElementType) -> String {
         osmquadtree::elements::ElementType::Relation => String::from("relation")
     }
 }
+
+fn elementtype_from_str(et: &str) -> PyResult<osmquadtree::elements::ElementType> {
+    match et.to_lowercase().as_str() {
+        "node" | "n" => Ok(osmquadtree::elements::ElementType::Node),
+        "way" | "w" => Ok(osmquadtree::elements::ElementType::Way),
+        "relation" | "r" => Ok(osmquadtree::elements::ElementType::Relation),
+        _ => Err(PyValueError::new_err(format!("unknown elementtype {}", et)))
+    }
+}
+
 fn changetype_str(e: &osmquadtree::elements::Changetype) -> String {
     match e {
         osmquadtree::elements::Changetype::Normal => String::from("normal"),
@@ -384,6 +549,21 @@ fn changetype_str(e: &osmquadtree::elements::Changetype) -> String {
         
     }
 }
+
+fn changetype_from_str(ct: &str) -> PyResult<osmquadtree::elements::Changetype> {
+    match ct.to_lowercase().as_str() {
+        "" | "normal" | "n" => Ok(osmquadtree::elements::Changetype::Normal),
+        "delete" | "d" => Ok(osmquadtree::elements::Changetype::Delete),
+        "remove" | "r" => Ok(osmquadtree::elements::Changetype::Remove),
+        "modify" | "m" => Ok(osmquadtree::elements::Changetype::Modify),
+        "unchanged" | "u" => Ok(osmquadtree::elements::Changetype::Unchanged),
+        "create" | "c" => Ok(osmquadtree::elements::Changetype::Create),
+        _ => Err(PyValueError::new_err(format!("unknown changetype {}", ct)))
+    }
+}
+        
+        
+
 fn prep_mems(py: Python, mems: &[osmquadtree::elements::Member]) -> PyResult<PyObject> {
     let res = PyList::empty(py);
     for m in mems {
@@ -395,6 +575,44 @@ fn prep_mems(py: Python, mems: &[osmquadtree::elements::Member]) -> PyResult<PyO
 
 #[pymethods]
 impl Relation {
+    pub fn clone(&self) -> PyResult<Relation> {
+        Relation::as_item(self.get_ele().clone())
+    }
+    
+    #[new]
+    pub fn new(
+        id: i64, changetype: &str,
+        version: i64, timestamp: i64, changeset: i64, user_id: i64, user: &str,
+        tags: Vec<(String,String)>,
+        mems: Vec<(String,i64,String)>, quadtree: &Quadtree) -> PyResult<Relation> {
+            
+        let mut rl = osmquadtree::elements::Relation::new(id, changetype_from_str(changetype)?);
+        let mut inf = osmquadtree::elements::Info::new();
+        inf.version = version;
+        inf.timestamp = timestamp;
+        inf.changeset = changeset;
+        inf.user_id = user_id;
+        inf.user = String::from(user);
+        rl.info = Some(inf);
+        for (k,v) in tags {
+            rl.tags.push(osmquadtree::elements::Tag::new(k,v));
+        }
+        
+        for (a,b,c) in mems {
+            let et = elementtype_from_str(&a)?;
+            let m = osmquadtree::elements::Member{mem_type: et, mem_ref: b, role: c};
+            rl.members.push(m);
+        }
+        rl.quadtree = quadtree.inner.clone();
+        Relation::as_item(rl)
+    }
+    
+    pub fn as_tuple(&self, py: Python) -> PyResult<PyObject> {
+        prep_relation_tuple(py, self.get_ele())
+    }
+    
+    
+    
     #[getter]
     pub fn id(&self) -> PyResult<i64> { Ok(self.get_ele().id) }
     
@@ -447,16 +665,337 @@ pub fn read_primitive_block(index: i64, location: u64, data: &PyBytes, ischange:
     let bl = osmquadtree::elements::PrimitiveBlock::read(index, location, data.as_bytes(), ischange,minimal)?;
     Ok(PrimitiveBlock{inner: Arc::new(bl)})
 }
+#[pyfunction]
+pub fn read_minimal_block(index: i64, location: u64, data: &PyBytes, ischange: bool) -> PyResult<MinimalBlock> {
     
+    let bl = osmquadtree::elements::MinimalBlock::read(index, location, data.as_bytes(), ischange)?;
+    Ok(MinimalBlock{inner: Box::new(bl)})
+}
+#[pyclass]
+pub struct MinimalBlock {
+    inner: Box<osmquadtree::elements::MinimalBlock>,
+}
+
+impl MinimalBlock {
+    pub fn new(bl: osmquadtree::elements::MinimalBlock) -> MinimalBlock {
+        MinimalBlock{inner: Box::new(bl)}
+    }
+}
+
+#[pymethods]
+impl MinimalBlock {
+    
+    #[getter]
+    pub fn index(&self) -> PyResult<i64> { Ok(self.inner.index) }
+    
+    #[getter]
+    pub fn location(&self) -> PyResult<u64> { Ok(self.inner.location) }
+    
+    #[getter]
+    pub fn quadtree(&self) -> PyResult<Quadtree> { Ok(Quadtree::new(self.inner.quadtree.clone())) }
+    
+    
+    #[getter]
+    pub fn start_date(&self) -> PyResult<i64> { Ok(self.inner.start_date) }
+    
+    #[getter]
+    pub fn end_date(&self) -> PyResult<i64> { Ok(self.inner.end_date) }
+    
+    pub fn num_nodes(&self) -> PyResult<i64> { Ok(self.inner.nodes.len() as i64) }
+    pub fn num_ways(&self) -> PyResult<i64> { Ok(self.inner.ways.len() as i64) }
+    pub fn num_relations(&self) -> PyResult<i64> { Ok(self.inner.relations.len() as i64) }
+    
+    pub fn node_at(&self, py: Python, which: i64) -> PyResult<PyObject> {
+        
+        prep_minimal_node_tuple(py, &self.inner.nodes[prep_which(&self.inner.nodes, which)?])
+    }
+    pub fn way_at(&self, py: Python, which: i64) -> PyResult<PyObject> {
+        
+        prep_minimal_way_tuple(py, &self.inner.ways[prep_which(&self.inner.ways, which)?])
+    }
+    pub fn relation_at(&self, py: Python, which: i64) -> PyResult<PyObject> {
+        
+        prep_minimal_relation_tuple(py, &self.inner.relations[prep_which(&self.inner.relations, which)?])
+        
+    }
+}
+
+
+fn prep_minimal_node_tuple(py: Python, n: &osmquadtree::elements::MinimalNode) -> PyResult<PyObject> {
+    
+    Ok((
+        "node",
+        changetype_str(&n.changetype),
+        n.id,
+        (n.version, n.timestamp),
+        py.None(),
+        (n.lon, n.lat),
+        Quadtree::new(n.quadtree)
+    ).into_py(py))
+
+}
+
+fn prep_minimal_way_tuple(py: Python, n: &osmquadtree::elements::MinimalWay) -> PyResult<PyObject> {
+    
+    Ok((
+        "way",
+        changetype_str(&n.changetype),
+        n.id,
+        (n.version, n.timestamp),
+        py.None(),
+        simple_protocolbuffers::read_delta_packed_int(&n.refs_data),
+        Quadtree::new(n.quadtree)
+    ).into_py(py))
+    
+    
+}
+fn prep_minimal_relation_tuple(py: Python, n: &osmquadtree::elements::MinimalRelation) -> PyResult<PyObject> {
+    let mut mm: Vec<(u64,i64,Option<String>)> = Vec::new();
+    for (a,b) in simple_protocolbuffers::DeltaPackedInt::new(&n.refs_data).zip(
+        simple_protocolbuffers::PackedInt::new(&n.types_data)) {
+        
+        mm.push((b, a, None));
+    }
+    
+    Ok((
+        "relation",
+        changetype_str(&n.changetype),
+        n.id,
+        (n.version, n.timestamp),
+        py.None(),
+        mm,
+        Quadtree::new(n.quadtree)
+    ).into_py(py))
+    
+    
+}
+
+
+
+use osmquadtree::elements::IdSet as __IdSet;
+
+#[pyclass]
+#[derive(Clone)]
+pub struct IdSetSet {
+    pub inner: osmquadtree::elements::IdSetSet,
+    
+}
+
+#[pymethods]
+impl IdSetSet {
+    
+    
+    #[new]
+    pub fn new() -> PyResult<IdSetSet> {
+        Ok(IdSetSet{inner: osmquadtree::elements::IdSetSet::new()})
+    }
+    
+    
+    pub fn add_block_full(&mut self, bl: &PrimitiveBlock) -> PyResult<()> {
+        for n in &bl.inner.nodes {
+            self.inner.nodes.insert(n.id);
+        }
+        for w in &bl.inner.ways {
+            self.inner.ways.insert(w.id);
+        }
+        for r in &bl.inner.relations {
+            self.inner.relations.insert(r.id);
+        }
+        Ok(())
+    }
+    
+    
+    pub fn add_block_box(&mut self, bx_in: (i32,i32,i32,i32), bl: &PrimitiveBlock) -> PyResult<()> {
+        let bx = osmquadtree::elements::Bbox::new(bx_in.0,bx_in.1,bx_in.2,bx_in.3);
+        for n in &bl.inner.nodes {
+            if bx.contains_point(n.lon, n.lat) {
+                self.inner.nodes.insert(n.id);
+            }
+        }
+        for w in &bl.inner.ways {
+            if (|| {
+                for n in &w.refs {
+                    if self.inner.nodes.contains(n) {
+                        return true;
+                    }
+                }
+                false
+            })() {
+                self.inner.ways.insert(w.id);
+                for n in &w.refs {
+                    if !self.inner.nodes.contains(n) {
+                        self.inner.exnodes.insert(*n);
+                    }
+                }
+            }
+        }
+        
+        for r in &bl.inner.relations {
+            if (|| {
+                for m in &r.members {
+                    if self.inner.contains(m.mem_type.clone(), m.mem_ref) {
+                        return true;
+                    }
+                }
+                false
+            })() {
+                self.inner.relations.insert(r.id);
+            }
+        }
+        Ok(())
+        
+    }
+    pub fn add_minimal_block_full(&mut self, bl: &MinimalBlock) -> PyResult<()> {
+        for n in &bl.inner.nodes {
+            self.inner.nodes.insert(n.id);
+        }
+        for w in &bl.inner.ways {
+            self.inner.ways.insert(w.id);
+        }
+        for r in &bl.inner.relations {
+            self.inner.relations.insert(r.id);
+        }
+        Ok(())
+    }
+    
+    
+    pub fn add_minimal_block_box(&mut self, bx_in: (i32,i32,i32,i32), bl: &MinimalBlock) -> PyResult<()> {
+        let bx = osmquadtree::elements::Bbox::new(bx_in.0,bx_in.1,bx_in.2,bx_in.3);
+        for n in &bl.inner.nodes {
+            if bx.contains_point(n.lon, n.lat) {
+                self.inner.nodes.insert(n.id);
+            }
+        }
+        for w in &bl.inner.ways {
+            if (|| {
+                for n in simple_protocolbuffers::DeltaPackedInt::new(&w.refs_data) {
+                    if self.inner.nodes.contains(&n) {
+                        return true;
+                    }
+                }
+                false
+            })() {
+                self.inner.ways.insert(w.id);
+                for n in simple_protocolbuffers::DeltaPackedInt::new(&w.refs_data) {
+                    if !self.inner.nodes.contains(&n) {
+                        self.inner.exnodes.insert(n);
+                    }
+                }
+            }
+        }
+        
+        for r in &bl.inner.relations {
+            if (|| {
+                for (t,i) in simple_protocolbuffers::PackedInt::new(&r.types_data).zip(
+                    simple_protocolbuffers::DeltaPackedInt::new(&r.refs_data)) {
+                    if self.inner.contains(osmquadtree::elements::ElementType::from_int(t),i) {
+                        return true;
+                    }
+                }
+                false
+            })() {
+                self.inner.relations.insert(r.id);
+            }
+        }
+        Ok(())
+        
+    }
+    
+    fn is_exnode(&self, i: i64) -> PyResult<bool> {
+        Ok(self.inner.is_exnode(i))
+    }
+}
+
+#[pyproto]
+impl PySequenceProtocol<'p> for IdSetSet {
+    
+
+    fn __contains__(&self, ti: (&'p str, i64)) -> PyResult<bool> {
+        
+        match ti.0.to_lowercase().as_str() {
+            "node" | "n" => Ok(self.inner.nodes.contains(&ti.1)),
+            "way" | "w" => Ok(self.inner.ways.contains(&ti.1)),
+            "relation" | "r" => Ok(self.inner.relations.contains(&ti.1)),
+            _ => Err(PyValueError::new_err(format!("unexpected type {} {}", ti.0, ti.1)))
+        }
+    }
+}
+
+#[pyproto]
+impl PyObjectProtocol for IdSetSet {
+    fn __str__(&self) -> PyResult<String> {
+        Ok(format!("{}", self.inner))
+    }
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("IdSetSet"))
+    }
+        
+}
+
+#[pyclass]
+#[derive(Clone)]
+pub struct IdSet {
+    pub inner: Arc<dyn osmquadtree::elements::IdSet>
+}
+impl IdSet {
+    pub fn new(inner: Arc<dyn osmquadtree::elements::IdSet>) -> IdSet {
+        IdSet{inner: inner}
+    }
+}
+
+#[pyproto]
+impl PySequenceProtocol<'p> for IdSet {
+    
+
+    fn __contains__(&self, ti: (&'p str, i64)) -> PyResult<bool> {
+        
+        match ti.0.to_lowercase().as_str() {
+            "node" | "n" => Ok(self.inner.contains(osmquadtree::elements::ElementType::Node, ti.1)),
+            "way" | "w" => Ok(self.inner.contains(osmquadtree::elements::ElementType::Way, ti.1)),
+            "relation" | "r" => Ok(self.inner.contains(osmquadtree::elements::ElementType::Relation, ti.1)),
+            _ => Err(PyValueError::new_err(format!("unexpected type {} {}", ti.0, ti.1)))
+        }
+    }
+}
+
+#[pyproto]
+impl PyObjectProtocol for IdSet {
+    fn __str__(&self) -> PyResult<String> {
+        Ok(format!("{}", self.inner))
+    }
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("IdSet"))
+    }
+        
+}
+/*
+#[pyfunction]
+pub fn merge_primitive_blocks(bls: Vec<PrimitiveBlock>) -> PyResult<PrimitiveBlock> {
+    
+    if bls.len() == 0 {
+        return Err(PyExpection::new_err("no blocks"));
+    }
+    
+    if bls.len() == 1 {
+        return Ok(bls[0]);
+    }
+    
+    let cc = osmquadtree::elements::merge_
+*/
+
 
 pub(crate) fn wrap_elements(m: &PyModule) -> PyResult<()> {
     
     m.add_wrapped(wrap_pyfunction!(read_primitive_block))?;
+    m.add_wrapped(wrap_pyfunction!(read_minimal_block))?;
     m.add_class::<Node>()?;
     m.add_class::<Way>()?;
     m.add_class::<Relation>()?;
     m.add_class::<PrimitiveBlock>()?;
     m.add_class::<Quadtree>()?;
+    m.add_class::<MinimalBlock>()?;
+    m.add_class::<IdSet>()?;
+    m.add_class::<IdSetSet>()?;
     
     Ok(())
 }
