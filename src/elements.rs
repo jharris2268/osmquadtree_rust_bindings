@@ -3,11 +3,12 @@ use pyo3::{wrap_pyfunction,PyObjectProtocol};
 use pyo3::types::{PyBytes,PyList, PyTuple};
 use pyo3::exceptions::*;
 use pyo3::sequence::PySequenceProtocol;
-
+use pyo3::basic::CompareOp;
 use std::sync::Arc;
 //use std::ops::Drop;
 
 #[pyclass]
+#[derive(Clone)]
 pub struct Quadtree {
     inner: osmquadtree::elements::Quadtree
 }
@@ -34,6 +35,17 @@ impl Quadtree {
 impl PyObjectProtocol for Quadtree {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
+    }
+    
+    fn __richcmp__(&self, other: Quadtree, compareop: CompareOp) -> PyResult<bool> {
+        match compareop {
+            CompareOp::Lt => { Ok(self.inner.as_int() < other.integer()?) },
+            CompareOp::Le => { Ok(self.inner.as_int() <= other.integer()?) },
+            CompareOp::Eq => { Ok(self.inner.as_int() == other.integer()?) },
+            CompareOp::Ne => { Ok(self.inner.as_int() != other.integer()?) },
+            CompareOp::Gt => { Ok(self.inner.as_int() > other.integer()?) },
+            CompareOp::Ge => { Ok(self.inner.as_int() >= other.integer()?) },
+        }
     }
     
 }
@@ -983,11 +995,28 @@ pub fn merge_primitive_blocks(bls: Vec<PrimitiveBlock>) -> PyResult<PrimitiveBlo
     let cc = osmquadtree::elements::merge_
 */
 
+#[pyfunction]
+pub fn combine_primitive(left: &PrimitiveBlock, right: &PrimitiveBlock) -> PyResult<PrimitiveBlock> {
+    
+    let r = osmquadtree::elements::combine_block_primitive_clone(&left.inner, &right.inner);
+    Ok(PrimitiveBlock::new(r))
+}
+    
+#[pyfunction]
+pub fn apply_change_primitive(left: &PrimitiveBlock, right: &PrimitiveBlock) -> PyResult<PrimitiveBlock> {
+    
+    let r = osmquadtree::elements::apply_change_primitive_clone(&left.inner, &right.inner);
+    Ok(PrimitiveBlock::new(r))
+}
+
+
 
 pub(crate) fn wrap_elements(m: &PyModule) -> PyResult<()> {
     
     m.add_wrapped(wrap_pyfunction!(read_primitive_block))?;
     m.add_wrapped(wrap_pyfunction!(read_minimal_block))?;
+    m.add_wrapped(wrap_pyfunction!(apply_change_primitive))?;
+    m.add_wrapped(wrap_pyfunction!(combine_primitive))?;
     m.add_class::<Node>()?;
     m.add_class::<Way>()?;
     m.add_class::<Relation>()?;
