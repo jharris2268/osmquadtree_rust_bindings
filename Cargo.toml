@@ -12,6 +12,9 @@ osmquadtree = { git = "https://github.com/jharris2268/osmquadtree-rust.git", bra
 simple-protocolbuffers = { git = "https://github.com/jharris2268/simple-protocolbuffers.git", branch = "main" }
 channelled-callbacks = { git = "https://github.com/jharris2268/channelled-callbacks.git", branch = "main" }
 
+osmquadtree-geometry = { git = "https://github.com/jharris2268/osmquadtree-geometry.git", branch = "main" }
+
+serde_json = "*"
 
 [dependencies.pyo3]
 version = "0.13.2"

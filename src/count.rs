@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::{wrap_pyfunction,PyObjectProtocol};
 use pyo3::exceptions::*;
+use pyo3::types::PyList;
 use std::sync::{Arc,RwLock};
 use osmquadtree::count::CountBlocks;
 #[pyclass]
@@ -183,7 +184,7 @@ impl Count {
     
     #[getter]
     pub fn node(&self) -> PyResult<NodeCount> {
-        Ok(NodeCount{inner: Count{inner: self.inner.clone()}})//, changetype: osmquadtree::elements::Changetype::Normal})
+        Ok(NodeCount{inner: Count{inner: self.inner.clone()}})
     }
         
         
@@ -209,56 +210,19 @@ impl PyObjectProtocol for Count {
         Ok(format!("Count [{}, {}, {}]", c.node.num, c.way.num, c.relation.num))
     }
 }
-/*
-#[pyclass]
-pub struct CountChange {
-    inner: Arc<osmquadtree::count::CountChange>
-}
 
-#[pymethods]
-impl CountChange {
-    
-    
-    
-    #[getter]
-    pub fn node(&self) -> PyResult<PyDict> {
-        Ok(NodeCount{inner: self.inner.clone()})
-    }
-        
-        
-    
-    #[getter]
-    pub fn way(&self) -> PyResult<PyDict> {
-        Ok(WayCount{inner: self.inner.clone()})
-    }
-    
-    #[getter]
-    pub fn relation(&self) -> PyResult<PyDict> {
-        Ok(RelationCount{inner: self.inner.clone()})
-    }
-}
 
-#[pyproto]
-impl PyObjectProtocol for Count {
-    fn __str__(&self) -> PyResult<String> {
-        Ok(format!("{}", self.inner))
-    }
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(format!("Count [{}, {}, {}]", self.inner.node.num, self.inner.way.num, self.inner.relation.num))
-    }
-}
-
-*/
 /// Parses the File from the specified Path into a document
 #[pyfunction]
 fn call_count(py: Python,
     fname: &str,
     use_primitive: bool,
     numchan: usize,
-    filter_in: Option<&str>) -> PyResult<Count> {
+    filter_in: Option<&str>,
+    tstamp: Option<&str>) -> PyResult<Count> {
     
     
-    let op = || osmquadtree::count::call_count(fname, use_primitive, numchan, filter_in);
+    let op = || osmquadtree::count::call_count(fname, use_primitive, numchan, filter_in, tstamp);
     
     let res = 
         if numchan == 0 {
@@ -278,6 +242,52 @@ fn call_count(py: Python,
     
 }
 
+
+
+use crate::elements::prep_element_tuple;
+
+#[pyfunction]
+fn compare_pbf_files(py: Python, left: &str, right: &str, numchan: usize, max_result_len: usize) -> PyResult<PyObject> {
+    
+    let (eles,users,count) = py.allow_threads( || {
+    
+        let left_iter = osmquadtree::pbfformat::iter_elements_flat(left, numchan/2)?;
+        let right_iter = osmquadtree::pbfformat::iter_elements_flat(right, numchan/2)?;
+        osmquadtree::elements::compare_element_iters(left_iter,right_iter,max_result_len)
+    })?;
+    
+    let list = PyList::empty(py);
+    for ele in eles {
+        match &ele {
+            osmquadtree::elements::ElementCompare::OnlyLeft(l) => { list.append::<PyObject>(("OnlyLeft", prep_element_tuple(py,l)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::OnlyRight(r) => { list.append::<PyObject>(("OnlyRight", prep_element_tuple(py,r)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::DifferentInfo(l,r) => { list.append::<PyObject>(("DifferentInfo", prep_element_tuple(py,l)?,prep_element_tuple(py,r)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::DifferentTags(l,r) => { list.append::<PyObject>(("DifferentTags", prep_element_tuple(py,l)?,prep_element_tuple(py,r)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::DifferentData(l,r) => { list.append::<PyObject>(("DifferentData", prep_element_tuple(py,l)?,prep_element_tuple(py,r)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::DifferentQuadtree(l,r) => { list.append::<PyObject>(("DifferentQuadtree", prep_element_tuple(py,l)?,prep_element_tuple(py,r)?).into_py(py))?; },
+            osmquadtree::elements::ElementCompare::Same => {},
+            osmquadtree::elements::ElementCompare::ChangedUserName(ln,rn) => { list.append::<PyObject>(("ChangedUserName",ln,rn).into_py(py))?;},
+        }
+    }
+    
+    Ok((list, users,count).into_py(py))
+}
+
+#[pyfunction]
+fn compare_pbf_files_json(py: Python, left: &str, right: &str, numchan: usize, outfn: &str) -> PyResult<PyObject> {
+    
+    let (users,count) = py.allow_threads( || {
+    
+        let left_iter = osmquadtree::pbfformat::iter_elements_flat(left, numchan/2)?;
+        let right_iter = osmquadtree::pbfformat::iter_elements_flat(right, numchan/2)?;
+        osmquadtree::elements::compare_element_iters_json(left_iter,right_iter,outfn)
+    })?;
+    
+   
+    
+    Ok((users,count).into_py(py))
+}
+
 pub(crate) fn wrap_count(m: &PyModule) -> PyResult<()> {
     
     m.add_wrapped(wrap_pyfunction!(call_count))?;
@@ -285,6 +295,7 @@ pub(crate) fn wrap_count(m: &PyModule) -> PyResult<()> {
     m.add_class::<WayCount>()?;
     m.add_class::<RelationCount>()?;
     m.add_class::<Count>()?;
-    
+    m.add_wrapped(wrap_pyfunction!(compare_pbf_files))?;
+    m.add_wrapped(wrap_pyfunction!(compare_pbf_files_json))?;
     Ok(())
 }

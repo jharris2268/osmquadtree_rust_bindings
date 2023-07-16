@@ -10,7 +10,7 @@ use std::sync::Arc;
 #[pyclass]
 #[derive(Clone)]
 pub struct Quadtree {
-    inner: osmquadtree::elements::Quadtree
+    pub inner: osmquadtree::elements::Quadtree
 }
 
 impl Quadtree {
@@ -29,10 +29,24 @@ impl Quadtree {
 
     #[getter]
     pub fn string(&self) -> PyResult<String> { Ok(self.inner.as_string()) }
+    
+    pub fn depth(&self) -> PyResult<usize> { Ok(self.inner.depth()) }
+    pub fn round(&self, nd: usize) -> PyResult<Quadtree> { Ok(Quadtree::new(self.inner.round(nd))) }
+    pub fn is_parent(&self, o: &Quadtree) -> PyResult<bool> { Ok(self.inner.is_parent(&o.inner)) }
+    pub fn as_bbox(&self, b: f64) -> PyResult<(i32,i32,i32,i32)> { 
+        let bx = self.inner.as_bbox(b);
+        Ok((bx.minlon,bx.minlat,bx.maxlon,bx.maxlat))
+    }
+    
+    
 }
 
 #[pyproto]
 impl PyObjectProtocol for Quadtree {
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("Quadtree {}", self.inner.as_int()))
+    }
+    
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }
@@ -65,7 +79,7 @@ impl PrimitiveBlock {
     
 }
 
-fn prep_which<T>(vv: &Vec<T>, mut which: i64) -> PyResult<usize> {
+pub(crate) fn prep_which<T>(vv: &Vec<T>, mut which: i64) -> PyResult<usize> {
     let nl = vv.len() as i64;
     if which >= nl {
         return Err(PyIndexError::new_err(format!("{} >= {}",which,nl)));
@@ -189,7 +203,7 @@ impl Drop for PrimitiveBlock {
     }
 }*/
 
-fn prep_tags(py: Python, tgs: &Vec<osmquadtree::elements::Tag>) -> PyResult<PyObject> {
+pub(crate) fn prep_tags(py: Python, tgs: &Vec<osmquadtree::elements::Tag>) -> PyResult<PyObject> {
     let res = PyList::empty(py);
     for t in tgs {
         res.append((t.key.clone(), t.val.clone()))?;
@@ -197,7 +211,7 @@ fn prep_tags(py: Python, tgs: &Vec<osmquadtree::elements::Tag>) -> PyResult<PyOb
     Ok(res.into())
 }
 
-fn prep_info(py: Python, info_op: &Option<osmquadtree::elements::Info>) -> PyResult<PyObject> {
+pub(crate) fn prep_info(py: Python, info_op: &Option<osmquadtree::elements::Info>) -> PyResult<PyObject> {
     match info_op {
         Some(info) => {
             
@@ -249,6 +263,17 @@ fn prep_relation_tuple(py: Python, n: &osmquadtree::elements::Relation) -> PyRes
     ).into_py(py)) 
     
 }
+
+pub fn prep_element_tuple(py: Python, ele: &osmquadtree::elements::Element) -> PyResult<PyObject> {
+    match ele {
+        osmquadtree::elements::Element::Node(n) => prep_node_tuple(py,n),
+        osmquadtree::elements::Element::Way(w) => prep_way_tuple(py,w),
+        osmquadtree::elements::Element::Relation(r) => prep_relation_tuple(py,r),
+        //_ => Err(PyValueError::new_err("unexpected element type"))
+    }
+}
+        
+    
 
 #[derive(Clone)]
 enum NodeItem {
@@ -537,7 +562,8 @@ fn mem_role_str(e: &osmquadtree::elements::ElementType) -> String {
     match e {
         osmquadtree::elements::ElementType::Node => String::from("node"),
         osmquadtree::elements::ElementType::Way => String::from("way"),
-        osmquadtree::elements::ElementType::Relation => String::from("relation")
+        osmquadtree::elements::ElementType::Relation => String::from("relation"),
+        _ => {String::from("???")}
     }
 }
 
@@ -802,6 +828,15 @@ impl IdSetSet {
         Ok(IdSetSet{inner: osmquadtree::elements::IdSetSet::new()})
     }
     
+    pub fn insert(&mut self, t: &str, id: i64) -> PyResult<()> {
+        
+        match t.to_lowercase().as_str() {
+            "n" | "node" => { self.inner.nodes.insert(id); Ok(())},
+            "w" | "way" => { self.inner.ways.insert(id); Ok(())},
+            "r" | "relation" => { self.inner.relations.insert(id); Ok(())},
+            _ => Err(PyValueError::new_err(format!("unexpected type {} {}", t, id)))
+        }
+    }
     
     pub fn add_block_full(&mut self, bl: &PrimitiveBlock) -> PyResult<()> {
         for n in &bl.inner.nodes {
@@ -980,20 +1015,6 @@ impl PyObjectProtocol for IdSet {
     }
         
 }
-/*
-#[pyfunction]
-pub fn merge_primitive_blocks(bls: Vec<PrimitiveBlock>) -> PyResult<PrimitiveBlock> {
-    
-    if bls.len() == 0 {
-        return Err(PyExpection::new_err("no blocks"));
-    }
-    
-    if bls.len() == 1 {
-        return Ok(bls[0]);
-    }
-    
-    let cc = osmquadtree::elements::merge_
-*/
 
 #[pyfunction]
 pub fn combine_primitive(left: &PrimitiveBlock, right: &PrimitiveBlock) -> PyResult<PrimitiveBlock> {
@@ -1008,6 +1029,28 @@ pub fn apply_change_primitive(left: &PrimitiveBlock, right: &PrimitiveBlock) -> 
     let r = osmquadtree::elements::apply_change_primitive_clone(&left.inner, &right.inner);
     Ok(PrimitiveBlock::new(r))
 }
+
+#[pyfunction]
+pub fn parse_timestamp(ts: &str) -> PyResult<i64> {
+    Ok(osmquadtree::utils::parse_timestamp(ts)?)    
+}
+
+#[pyfunction]
+pub fn timestamp_string(ts: i64) -> PyResult<String> {
+    Ok(osmquadtree::utils::timestamp_string(ts))
+}
+
+#[pyfunction]
+pub fn timestamp_string_alt(ts: i64) -> PyResult<String> {
+    Ok(osmquadtree::utils::timestamp_string_alt(ts))
+}
+
+
+#[pyfunction]
+pub fn date_string(ts: i64) -> PyResult<String> {
+    Ok(osmquadtree::utils::date_string(ts))
+}
+
 
 
 
@@ -1026,6 +1069,10 @@ pub(crate) fn wrap_elements(m: &PyModule) -> PyResult<()> {
     m.add_class::<IdSet>()?;
     m.add_class::<IdSetSet>()?;
     
+    m.add_wrapped(wrap_pyfunction!(parse_timestamp))?;
+    m.add_wrapped(wrap_pyfunction!(timestamp_string))?;
+    m.add_wrapped(wrap_pyfunction!(timestamp_string_alt))?;
+    m.add_wrapped(wrap_pyfunction!(date_string))?;
     Ok(())
 }
 
