@@ -8,14 +8,14 @@ crate-type = ["cdylib"]
 
 
 [dependencies]
-#osmquadtree = { git = "https://github.com/jharris2268/osmquadtree-rust.git", branch = "main" }
-osmquadtree = { path = "/home/james/rust/osmquadtree/", features = ["python"] }
+osmquadtree = { git = "https://github.com/jharris2268/osmquadtree-rust.git", branch = "main", features = ["python"] }
+#osmquadtree = { path = "/home/james/rust/osmquadtree/", features = ["python"] }
 
 simple-protocolbuffers = { git = "https://github.com/jharris2268/simple-protocolbuffers.git", branch = "main" }
 channelled-callbacks = { git = "https://github.com/jharris2268/channelled-callbacks.git", branch = "main" }
 
-#osmquadtree-geometry = { git = "https://github.com/jharris2268/osmquadtree-geometry.git", branch = "main" }
-osmquadtree-geometry = { path = "/home/james/rust/osmquadtree-geometry/" }
+osmquadtree-geometry = { git = "https://github.com/jharris2268/osmquadtree-geometry.git", branch = "main" }
+#osmquadtree-geometry = { path = "/home/james/rust/osmquadtree-geometry/" }
 
 serde_json = "*"
 
