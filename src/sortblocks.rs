@@ -1,10 +1,11 @@
 use pyo3::prelude::*;
-use pyo3::{wrap_pyfunction,PyObjectProtocol,PySequenceProtocol};
+use pyo3::wrap_pyfunction;
 use pyo3::exceptions::{PyIndexError,PyValueError};
 use crate::elements::Quadtree;
 use std::sync::Arc;
 
 #[pyfunction]
+#[pyo3(signature = (fname, outfn=None,qt_level=17,qt_buffer=0.05, mode=None,keep_temps=false, numchan=4, ram_gb=8))]
 pub fn run_calcqts(py: Python,
     fname: &str, 
     outfn: Option<&str>, 
@@ -94,10 +95,7 @@ impl QuadtreeTree {
         quadtreetreeitem_tuple(py, ii)
     }
     
-}
 
-#[pyproto]
-impl PyObjectProtocol for QuadtreeTree {
 /*    fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }*/
@@ -108,12 +106,12 @@ impl PyObjectProtocol for QuadtreeTree {
         }
             
     }
-}
+/*}
 
 
 
 #[pyproto]
-impl PySequenceProtocol for QuadtreeTree {
+impl PySequenceProtocol for QuadtreeTree {*/
     fn __len__(&self) -> PyResult<usize> {
         Ok(self.get_inner()?.len())
     }
@@ -126,9 +124,11 @@ impl PySequenceProtocol for QuadtreeTree {
         
         let ii = t.at(idx as u32);
         
-        let gil_guard = Python::acquire_gil();
-        let py = gil_guard.python();
-        quadtreetreeitem_tuple(py, ii)
+        //let gil_guard = Python::acquire_gil();
+        //let py = gil_guard.python();
+        Python::with_gil(|py| { 
+            quadtreetreeitem_tuple(py, ii)
+        })
         
     }
              
@@ -156,10 +156,10 @@ pub fn find_tree_groups(py: Python, tree_py: &mut QuadtreeTree, target: i64, min
 pub fn sort_blocks(
     py: Python, infn: &str, qtsfn: &str, outfn: &str, 
     groups_obj: &mut QuadtreeTree, numchan: usize, splitat: i64,
-    tempinmem: bool, limit: usize, timestamp: i64, keep_temps: bool, compression_type: (&str,u32)) -> PyResult<PyObject> {
+    tempinmem: bool, limit: usize, timestamp: i64, keep_temps: bool, compression_type: (String,u32)) -> PyResult<PyObject> {
         
     let mut lt = osmquadtree::utils::LogTimes::new();
-    let ct = crate::readpbf::compression_type_from_string(compression_type)?;
+    let ct = crate::readpbf::compression_type_from_string((&compression_type.0, compression_type.1))?;
     let groups = Arc::from(groups_obj.inner.take().unwrap());
     
     py.allow_threads(|| osmquadtree::sortblocks::sort_blocks(infn, qtsfn, outfn, groups, numchan, splitat, tempinmem, limit, timestamp, keep_temps, ct, &mut lt))?;
@@ -169,7 +169,7 @@ pub fn sort_blocks(
 }
 
 
-pub(crate) fn wrap_sortblocks(m: &PyModule) -> PyResult<()> {
+pub(crate) fn wrap_sortblocks(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(run_calcqts))?;
     m.add_class::<QuadtreeTree>()?;
     m.add_wrapped(wrap_pyfunction!(prepare_quadtree_tree))?;

@@ -1,12 +1,14 @@
 use pyo3::prelude::*;
-use pyo3::PyObjectProtocol;
+//use pyo3::PyObjectProtocol;
 use pyo3::types::{PyList,PyTuple,PyBytes};
 use pyo3::exceptions::*;
 use std::sync::Arc;
 use std::io::{Seek,SeekFrom,BufReader};
 use std::fs::File;
 
-use channelled_callbacks::{CallFinish,CallbackMerge,CallbackSync,Callback,ReplaceNoneWithTimings,Timings,MergeTimings};
+use channelled_callbacks::{CallFinish,CallbackMerge,CallbackSync,Callback,ReplaceNoneWithTimings,Timings,MergeTimings, Result as ccResult};
+use osmquadtree::utils::Error;
+use crate::ErrorWrapped;
 
 #[pyclass]
 pub struct FileBlock {
@@ -80,7 +82,7 @@ impl ReadFileBlocks {
         
         let co = Box::new(CollectBlocksCall::new(callback_func, groupby));
     
-        let mut conv: Box<dyn CallFinish<CallType = (usize, osmquadtree::pbfformat::FileBlock), ReturnType = Timings<usize>>> =
+        let mut conv: Box<dyn CallFinish<CallType = (usize, osmquadtree::pbfformat::FileBlock), ReturnType = Timings<usize>, ErrorType=Error>> =
             if numchan == 0 {
                 
                 osmquadtree::pbfformat::make_convert_primitive_block(ischange, co)
@@ -89,7 +91,7 @@ impl ReadFileBlocks {
                 let cosp = CallbackSync::new(co, numchan);
                 
                 let mut convs: Vec<
-                    Box<dyn CallFinish<CallType = (usize, osmquadtree::pbfformat::FileBlock), ReturnType = Timings<usize>>>,
+                    Box<dyn CallFinish<CallType = (usize, osmquadtree::pbfformat::FileBlock), ReturnType = Timings<usize>, ErrorType=Error>>,
                 > = Vec::new();
                 for cos in cosp {
                     let cos2 = Box::new(ReplaceNoneWithTimings::new(cos));
@@ -107,14 +109,18 @@ impl ReadFileBlocks {
             conv.call((i,bl));
             i+=1;
         }
-        let tm = conv.finish()?;
-    
-        let mut r = 0;
-        for (_,t) in tm.others {
-            r += t;
-        }
         
-        Ok(r)
+        match conv.finish() {
+            Ok(tm) => {
+                let mut r = 0;
+                for (_,t) in tm.others {
+                    r += t;
+                }
+                
+                Ok(r)
+            },
+            Err(e) => Err(PyErr::from(ErrorWrapped{e:e.into()}))
+        }
     }
     
 }
@@ -162,11 +168,15 @@ impl ReadFileBlocks {
     pub fn next_block(&mut self, py: Python, index: i64, ischange: bool, minimal: bool) -> PyResult<PyObject> {
         let fb = osmquadtree::pbfformat::read_file_block(&mut self.fbuf)?;
         if fb.block_type == "OSMData" {
-            let bl = osmquadtree::elements::PrimitiveBlock::read(index, fb.pos, &fb.data(), ischange, minimal)?;
-            Ok(crate::elements::PrimitiveBlock::new(bl).into_py(py))
+            match osmquadtree::elements::PrimitiveBlock::read(index, fb.pos, &fb.data(), ischange, minimal) {
+                Ok(bl) => Ok(crate::elements::PrimitiveBlock::new(bl).into_py(py)),
+                Err(e) => Err(PyErr::from(ErrorWrapped{e:e}))
+            }
         } else if fb.block_type == "OSMHeader" {
-            let hb = osmquadtree::pbfformat::HeaderBlock::read(fb.pos, &fb.data(), &self.fname)?;
-            Ok(HeaderBlock{inner: hb}.into_py(py))
+            match osmquadtree::pbfformat::HeaderBlock::read(fb.pos, &fb.data(), &self.fname) {
+                Ok(hb) => Ok(HeaderBlock{inner: hb}.into_py(py)),
+                Err(e) => Err(PyErr::from(ErrorWrapped{e:Error::Io(e)}))
+            }
         } else {
             
             Err(PyValueError::new_err(format!("block at {} not a OSMData or OSMHeader", fb.pos)))
@@ -213,8 +223,10 @@ impl HeaderBlock {
     pub fn index(&self, py: Python) -> PyResult<PyObject> {
         let res = PyList::empty(py);
         for ii in &self.inner.index {
-            
-            res.append((PyCell::new(py,crate::elements::Quadtree::new(ii.quadtree.clone()))?, ii.is_change, ii.location, ii.length))?;
+            let q = crate::elements::Quadtree::new(ii.quadtree.clone());
+            res.append((q, ii.is_change, ii.location, ii.length));
+                       
+            //res.append((PyCell::new(py,crate::elements::Quadtree::new(ii.quadtree.clone()))?, ii.is_change, ii.location, ii.length))?;
         }
         Ok(res.into())
     }
@@ -251,29 +263,31 @@ impl CollectBlocksCall {
             return;
         }
         
+        Python::with_gil(|py| {
+        //let gil_guard = Python::acquire_gil();
+        //let py = gil_guard.python();
         
-        let gil_guard = Python::acquire_gil();
-        let py = gil_guard.python();
-        
-        let list = PyList::empty(py);
-        let mut num=0;
-        for bl in std::mem::replace(&mut self.pending, Vec::new()) {
-            let bll = crate::elements::PrimitiveBlock::new(bl);
-        
-            list.append(bll.into_py(py)).expect("!!");
-            num+=1;
-        }
-        
-        let args = PyTuple::new(py, &[list]);
-        
-        self.callback.call1(py, args).expect("!!");
-        self.count+=num;
+            let list = PyList::empty(py);
+            let mut num=0;
+            for bl in std::mem::replace(&mut self.pending, Vec::new()) {
+                let bll = crate::elements::PrimitiveBlock::new(bl);
+            
+                list.append(bll.into_py(py)).expect("!!");
+                num+=1;
+            }
+            
+            let args = PyTuple::new(py, &[list]).unwrap();
+            
+            self.callback.call1(py, args).expect("!!");
+            self.count+=num;
+        });
     }
     
 }
 impl CallFinish for CollectBlocksCall {
     type CallType = osmquadtree::elements::PrimitiveBlock;
     type ReturnType = Timings<usize>;
+    type ErrorType = Error;
     
     fn call(&mut self, bl: osmquadtree::elements::PrimitiveBlock) {
         self.pending.push(bl);
@@ -285,7 +299,7 @@ impl CallFinish for CollectBlocksCall {
         
     }
     
-    fn finish(&mut self) -> std::io::Result<Timings<usize>> {
+    fn finish(&mut self) -> ccResult<Self::ReturnType, Error> {
         self.clear_pending();
         
         let mut tm = Timings::new();
@@ -311,29 +325,31 @@ impl CollectBlocksMinimalCall {
             return;
         }
         
+        Python::with_gil(|py| {
+        //let gil_guard = Python::acquire_gil();
+        //let py = gil_guard.python();
         
-        let gil_guard = Python::acquire_gil();
-        let py = gil_guard.python();
-        
-        let list = PyList::empty(py);
-        let mut num=0;
-        for bl in std::mem::replace(&mut self.pending, Vec::new()) {
-            let bll = crate::elements::MinimalBlock::new(bl);
-        
-            list.append(bll.into_py(py)).expect("!!");
-            num+=1;
-        }
-        
-        let args = PyTuple::new(py, &[list]);
-        
-        self.callback.call1(py, args).expect("!!");
-        self.count+=num;
+            let list = PyList::empty(py);
+            let mut num=0;
+            for bl in std::mem::replace(&mut self.pending, Vec::new()) {
+                let bll = crate::elements::MinimalBlock::new(bl);
+            
+                list.append(bll.into_py(py)).expect("!!");
+                num+=1;
+            }
+            
+            let args = PyTuple::new(py, &[list]).unwrap();
+            
+            self.callback.call1(py, args).expect("!!");
+            self.count+=num;
+        });
     }
     
 }
 impl CallFinish for CollectBlocksMinimalCall {
     type CallType = osmquadtree::elements::MinimalBlock;
     type ReturnType = Timings<usize>;
+    type ErrorType = Error;
     
     fn call(&mut self, bl: osmquadtree::elements::MinimalBlock) {
         self.pending.push(bl);
@@ -345,7 +361,7 @@ impl CallFinish for CollectBlocksMinimalCall {
         
     }
     
-    fn finish(&mut self) -> std::io::Result<Timings<usize>> {
+    fn finish(&mut self) -> ccResult<Self::ReturnType, Error> {
         self.clear_pending();
         
         let mut tm = Timings::new();
@@ -355,35 +371,42 @@ impl CallFinish for CollectBlocksMinimalCall {
 }
     
 
-pub fn read_filter(py: Python, filter: PyObject) -> PyResult<(bool, osmquadtree::elements::Bbox, Option<osmquadtree::mergechanges::Poly>)> {
-    if filter.is_none(py) {
-        return Ok((true, osmquadtree::elements::Bbox::planet(), None)); 
-    }
-            
-    let v1: PyResult<Vec<i32>> = filter.extract(py);
-    match v1 {
-        Ok(vv) => {
-            if vv.len()!=4 {
-                return Err(PyValueError::new_err("must be length 4"));
+pub fn read_filter(py: Python, filter_in: Option<PyObject>) -> PyResult<(bool, osmquadtree::elements::Bbox, Option<osmquadtree::mergechanges::Poly>)> {
+    
+    match filter_in {
+        None => { return Ok((true, osmquadtree::elements::Bbox::planet(), None));},
+        Some(filter) => {
+    
+            if filter.is_none(py) {
+                return Ok((true, osmquadtree::elements::Bbox::planet(), None)); 
             }
-            let bx = osmquadtree::elements::Bbox::new(vv[0], vv[1], vv[2], vv[3]);
-            return Ok((bx.is_planet(), bx, None));
-        },
-        Err(_) => {}
-    }
-    
-    let v2: PyResult<Poly> = filter.extract(py);
-    match v2 {
-        Ok(vv) => {
-            let p = vv.inner.clone();
+                    
+            let v1: PyResult<Vec<i32>> = filter.extract(py);
+            match v1 {
+                Ok(vv) => {
+                    if vv.len()!=4 {
+                        return Err(PyValueError::new_err("must be length 4"));
+                    }
+                    let bx = osmquadtree::elements::Bbox::new(vv[0], vv[1], vv[2], vv[3]);
+                    return Ok((bx.is_planet(), bx, None));
+                },
+                Err(_) => {}
+            }
             
-            return Ok((false, p.bounds(), Some(p)))
-        },
-        Err(_) => {}
+            let v2: PyResult<Poly> = filter.extract(py);
+            match v2 {
+                Ok(vv) => {
+                    let p = vv.inner.clone();
+                    
+                    return Ok((false, p.bounds(), Some(p)))
+                },
+                Err(_) => {}
+            }
+            
+           
+            return Err(PyValueError::new_err("can't handle filter"));
+        }
     }
-    
-   
-    return Err(PyValueError::new_err("can't handle filter"));
     
     
 }
@@ -434,7 +457,7 @@ impl ReadFileBlocksParallel {
         let co = Box::new(CollectBlocksCall::new(callback_func, self.callback_num_blocks));
         
         
-        let conv: Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>>> =
+        let conv: Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>, ErrorType=Error>> =
             if numchan == 0 {
                 
                 osmquadtree::pbfformat::make_read_primitive_blocks_combine_call_all_idset(co, ids.clone(), true)
@@ -443,7 +466,7 @@ impl ReadFileBlocksParallel {
                 let cosp = CallbackSync::new(co, numchan);
                 
                 let mut convs: Vec<
-                    Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>>>,
+                    Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>, ErrorType=Error>>,
                 > = Vec::new();
                 for cos in cosp {
                     let cos2 = Box::new(ReplaceNoneWithTimings::new(cos));
@@ -481,7 +504,7 @@ impl ReadFileBlocksParallel {
         let co = Box::new(CollectBlocksMinimalCall::new(callback_func, self.callback_num_blocks));
         
         
-        let conv: Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>>> =
+        let conv: Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>, ErrorType=Error>> =
             if numchan == 0 {
                 
                 osmquadtree::pbfformat::make_read_minimal_blocks_combine_call_all(co)
@@ -490,7 +513,7 @@ impl ReadFileBlocksParallel {
                 let cosp = CallbackSync::new(co, numchan);
                 
                 let mut convs: Vec<
-                    Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>>>,
+                    Box<dyn CallFinish<CallType = (usize, Vec<osmquadtree::pbfformat::FileBlock>), ReturnType = Timings<usize>, ErrorType=Error>>,
                 > = Vec::new();
                 for cos in cosp {
                     let cos2 = Box::new(ReplaceNoneWithTimings::new(cos));
@@ -554,16 +577,17 @@ impl ReadFileBlocksParallel {
 impl ReadFileBlocksParallel {
     
     #[new]
-    pub fn new(py: Python, prfx: &str, filter: PyObject/*, progress_call: PyObject*/, timestamp: Option<&str>, callback_num_blocks: usize) -> PyResult<ReadFileBlocksParallel> {
+    #[pyo3(signature = (prfx, filter=None,timestamp=None,callback_num_blocks=4))]
+    pub fn new(py: Python, prfx: &str, filter: Option<PyObject>/*, progress_call: PyObject*/, timestamp: Option<&str>, callback_num_blocks: usize) -> PyResult<ReadFileBlocksParallel> {
         
         let (is_planet, bbox, poly) = read_filter(py, filter)?;
         
         let ts = match timestamp {
-            Some(t) => Some(osmquadtree::utils::parse_timestamp(t)?),
+            Some(t) => Some(osmquadtree::utils::parse_timestamp(t).unwrap()),
             None => None
         };
         
-        let pfilelocs = osmquadtree::pbfformat::get_file_locs(prfx, Some(bbox.clone()), ts)?;
+        let pfilelocs = osmquadtree::pbfformat::get_file_locs(prfx, Some(bbox.clone()), ts).unwrap();
         
         
         
@@ -648,19 +672,19 @@ impl ReadFileBlocksParallel {
                   
     }
     
-    pub fn write_merged(&mut self, py: Python, outfn: &str, ids_obj: PyObject, compression_type: (&str, u32), numchan: usize) -> PyResult<()> {
+    pub fn write_merged(&mut self, py: Python, outfn: &str, ids_obj: PyObject, compression_type: (String, u32), numchan: usize) -> PyResult<()> {
         let ids = self.get_idset(py, ids_obj)?;
         
         let tx = osmquadtree::utils::LogTimes::new();
-        let ct = compression_type_from_string(compression_type)?;
+        let ct = compression_type_from_string((&compression_type.0, compression_type.1))?;
         
         py.allow_threads( || { osmquadtree::mergechanges::call_mergechanges(&mut self.pfilelocs, outfn, ids, &self.bbox, ct, tx, numchan)?; Ok(()) })
     }
     
-    pub fn write_merged_sort(&mut self, py: Python, outfn: &str, ids_obj: PyObject, inmem: bool, compression_type: (&str, u32), numchan: usize) -> PyResult<()> {
+    pub fn write_merged_sort(&mut self, py: Python, outfn: &str, ids_obj: PyObject, inmem: bool, compression_type: (String, u32), numchan: usize) -> PyResult<()> {
         
         let ids = self.get_idset(py, ids_obj)?;
-        let ct = compression_type_from_string(compression_type)?;
+        let ct = compression_type_from_string((&compression_type.0, compression_type.1))?;
         let tx = osmquadtree::utils::LogTimes::new();
         if inmem {
             
@@ -682,12 +706,7 @@ impl ReadFileBlocksParallel {
         
     }
     
-    
 
-}
-    
-#[pyproto]
-impl PyObjectProtocol for ReadFileBlocksParallel {
 /*    fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }*/
@@ -742,9 +761,7 @@ impl Poly {
     fn contains_point(&self, ln: i32, lt: i32) -> PyResult<bool> {
         Ok(self.inner.contains_point(ln,lt)) 
     }
-}
-#[pyproto]
-impl PyObjectProtocol for Poly {
+
 /*    fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }*/
@@ -754,7 +771,7 @@ impl PyObjectProtocol for Poly {
 }
 
 
-pub(crate) fn wrap_readpbf(m: &PyModule) -> PyResult<()> {
+pub(crate) fn wrap_readpbf(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     
     m.add_class::<ReadFileBlocks>()?;

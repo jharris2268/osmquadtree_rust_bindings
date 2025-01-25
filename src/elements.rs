@@ -1,11 +1,13 @@
 use pyo3::prelude::*;
-use pyo3::{wrap_pyfunction,PyObjectProtocol};
+use pyo3::wrap_pyfunction;
 use pyo3::types::{PyBytes,PyList, PyTuple};
 use pyo3::exceptions::*;
-use pyo3::sequence::PySequenceProtocol;
+//use pyo3::sequence::PySequenceProtocol;
 use pyo3::basic::CompareOp;
 use std::sync::Arc;
 //use std::ops::Drop;
+use crate::ErrorWrapped;
+
 
 #[pyclass]
 #[derive(Clone)]
@@ -16,6 +18,9 @@ pub struct Quadtree {
 impl Quadtree {
     pub fn new(inner: osmquadtree::elements::Quadtree) -> Quadtree {
         Quadtree{inner: inner}
+    }
+    pub fn empty() -> Quadtree {
+        Quadtree{inner: osmquadtree::elements::Quadtree::empty()}
     }
 }
 
@@ -39,10 +44,7 @@ impl Quadtree {
     }
     
     
-}
 
-#[pyproto]
-impl PyObjectProtocol for Quadtree {
     fn __repr__(&self) -> PyResult<String> {
         Ok(format!("Quadtree {}", self.inner.as_int()))
     }
@@ -186,9 +188,6 @@ impl PrimitiveBlock {
         
     }
     
-}
-#[pyproto]
-impl PyObjectProtocol for PrimitiveBlock {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.inner))
     }
@@ -221,7 +220,11 @@ pub(crate) fn prep_info(py: Python, info_op: &Option<osmquadtree::elements::Info
             res.push(info.timestamp.into_py(py));
             res.push(info.user.clone().into_py(py));
             res.push(info.user_id.into_py(py));
-            Ok(PyTuple::new(py,res).into())
+            match PyTuple::new(py,res) {
+                Ok(x) => Ok(x.into()),
+                Err(e) => Err(e)
+            }
+                
         },
         None => Ok(py.None())
     }
@@ -384,11 +387,7 @@ impl Node {
 
     #[getter]
     pub fn quadtree(&self) -> PyResult<Quadtree> { Ok(Quadtree::new(self.get_ele().quadtree.clone())) }
-}
 
-
-#[pyproto]
-impl PyObjectProtocol for Node {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -508,9 +507,7 @@ impl Way {
 
     #[getter]
     pub fn quadtree(&self) -> PyResult<Quadtree> { Ok(Quadtree::new(self.get_ele().quadtree.clone())) }
-}
-#[pyproto]
-impl PyObjectProtocol for Way {
+
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -686,9 +683,7 @@ impl Relation {
     }
     #[getter]
     pub fn quadtree(&self) -> PyResult<Quadtree> { Ok(Quadtree::new(self.get_ele().quadtree.clone())) }
-}
-#[pyproto]
-impl PyObjectProtocol for Relation {
+
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -698,16 +693,21 @@ impl PyObjectProtocol for Relation {
 }
 
 #[pyfunction]
-pub fn read_primitive_block(index: i64, location: u64, data: &PyBytes, ischange: bool, minimal: bool) -> PyResult<PrimitiveBlock> {
+pub fn read_primitive_block<'py>(index: i64, location: u64, data: &Bound<'py, PyBytes>, ischange: bool, minimal: bool) -> PyResult<PrimitiveBlock> {
     
-    let bl = osmquadtree::elements::PrimitiveBlock::read(index, location, data.as_bytes(), ischange,minimal)?;
-    Ok(PrimitiveBlock{inner: Arc::new(bl)})
+    match osmquadtree::elements::PrimitiveBlock::read(index, location, data.as_bytes(), ischange,minimal) {
+        Ok(bl) => Ok(PrimitiveBlock{inner: Arc::new(bl)}),
+        Err(e) => Err(PyErr::from(ErrorWrapped{e:e}))
+    }
 }
 #[pyfunction]
-pub fn read_minimal_block(index: i64, location: u64, data: &PyBytes, ischange: bool) -> PyResult<MinimalBlock> {
+pub fn read_minimal_block<'py>(index: i64, location: u64, data: &Bound<'py, PyBytes>, ischange: bool) -> PyResult<MinimalBlock> {
     
-    let bl = osmquadtree::elements::MinimalBlock::read(index, location, data.as_bytes(), ischange)?;
-    Ok(MinimalBlock{inner: Box::new(bl)})
+    match osmquadtree::elements::MinimalBlock::read(index, location, data.as_bytes(), ischange) {
+        Ok(bl) => Ok(MinimalBlock{inner: Box::new(bl)}),
+        Err(e) => Err(PyErr::from(ErrorWrapped{e:e}))
+    }
+    
 }
 #[pyclass]
 pub struct MinimalBlock {
@@ -951,13 +951,13 @@ impl IdSetSet {
     fn is_exnode(&self, i: i64) -> PyResult<bool> {
         Ok(self.inner.is_exnode(i))
     }
-}
 
-#[pyproto]
-impl PySequenceProtocol<'p> for IdSetSet {
+
+//#[pyproto]
+//impl PySequenceProtocol<'p> for IdSetSet {
     
 
-    fn __contains__(&self, ti: (&'p str, i64)) -> PyResult<bool> {
+    fn __contains__(&self, ti: (String, i64)) -> PyResult<bool> {
         
         match ti.0.to_lowercase().as_str() {
             "node" | "n" => Ok(self.inner.nodes.contains(&ti.1)),
@@ -966,10 +966,7 @@ impl PySequenceProtocol<'p> for IdSetSet {
             _ => Err(PyValueError::new_err(format!("unexpected type {} {}", ti.0, ti.1)))
         }
     }
-}
 
-#[pyproto]
-impl PyObjectProtocol for IdSetSet {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }
@@ -990,11 +987,11 @@ impl IdSet {
     }
 }
 
-#[pyproto]
-impl PySequenceProtocol<'p> for IdSet {
-    
+#[pymethods]
+impl IdSet {
+   
 
-    fn __contains__(&self, ti: (&'p str, i64)) -> PyResult<bool> {
+    fn __contains__(&self, ti: (String, i64)) -> PyResult<bool> {
         
         match ti.0.to_lowercase().as_str() {
             "node" | "n" => Ok(self.inner.contains(osmquadtree::elements::ElementType::Node, ti.1)),
@@ -1003,10 +1000,9 @@ impl PySequenceProtocol<'p> for IdSet {
             _ => Err(PyValueError::new_err(format!("unexpected type {} {}", ti.0, ti.1)))
         }
     }
-}
 
-#[pyproto]
-impl PyObjectProtocol for IdSet {
+
+
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{}", self.inner))
     }
@@ -1032,7 +1028,10 @@ pub fn apply_change_primitive(left: &PrimitiveBlock, right: &PrimitiveBlock) -> 
 
 #[pyfunction]
 pub fn parse_timestamp(ts: &str) -> PyResult<i64> {
-    Ok(osmquadtree::utils::parse_timestamp(ts)?)    
+    match osmquadtree::utils::parse_timestamp(ts) {
+        Ok(x) => Ok(x),
+        Err(e) => Err(PyErr::from(ErrorWrapped{e:e}))
+    }
 }
 
 #[pyfunction]
@@ -1054,7 +1053,7 @@ pub fn date_string(ts: i64) -> PyResult<String> {
 
 
 
-pub(crate) fn wrap_elements(m: &PyModule) -> PyResult<()> {
+pub(crate) fn wrap_elements(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     m.add_wrapped(wrap_pyfunction!(read_primitive_block))?;
     m.add_wrapped(wrap_pyfunction!(read_minimal_block))?;

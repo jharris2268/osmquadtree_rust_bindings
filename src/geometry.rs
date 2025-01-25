@@ -6,7 +6,7 @@ use crate::elements::{Quadtree,prep_which,prep_tags};//,prep_info};
 //use crate::readpbf::ReadFileBlocksParallel;
 
 use pyo3::prelude::*;
-use pyo3::{wrap_pyfunction,PyObjectProtocol};
+use pyo3::wrap_pyfunction;
 use pyo3::exceptions::*;
 use pyo3::types::PyBytes;
 use std::sync::Arc;
@@ -92,9 +92,7 @@ impl GeometryBlock {
     pub fn as_geojson(&self, py: Python, transform: bool) -> PyResult<PyObject> {
         Ok(wrap_json(py, &self.inner.to_geojson(transform)?))
     }
-}
-#[pyproto]
-impl PyObjectProtocol for GeometryBlock {
+
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.inner))
     }
@@ -258,11 +256,7 @@ impl PointGeometry {
         Ok(PyBytes::new(py, &self.get_ele().to_wkb(transform, srid)?).into_py(py))
     }
     
-}
 
-
-#[pyproto]
-impl PyObjectProtocol for PointGeometry {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -391,11 +385,7 @@ impl LinestringGeometry {
         Ok(PyBytes::new(py, &self.get_ele().to_wkb(transform, srid)?).into_py(py))
     }
     
-}
 
-
-#[pyproto]
-impl PyObjectProtocol for LinestringGeometry {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -705,11 +695,8 @@ impl ComplicatedPolygonGeometry {
     pub fn wkb(&self, py: Python, transform: bool, srid: bool) -> PyResult<PyObject> {
         Ok(PyBytes::new(py, &self.get_ele().to_wkb(transform, srid)?).into_py(py))
     }
-}
 
 
-#[pyproto]
-impl PyObjectProtocol for ComplicatedPolygonGeometry {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!("{:?}", self.get_ele()))
     }
@@ -719,52 +706,65 @@ impl PyObjectProtocol for ComplicatedPolygonGeometry {
 }
 
 
-fn prep_style(py: Python, style_in: PyObject) -> PyResult<Arc<osmquadtree_geometry::GeometryStyle>> {
+fn prep_style(py: Python, style: Option<PyObject>) -> PyResult<Arc<osmquadtree_geometry::GeometryStyle>> {
+    match style {
+        None => { return Ok(Arc::new(osmquadtree_geometry::GeometryStyle::default())); },
+        Some(style_in) => {
     
-    if style_in.is_none(py) {
-        return Ok(Arc::new(osmquadtree_geometry::GeometryStyle::default()));
-    }
     
-    if let Ok(style_str) = style_in.extract::<String>(py) {
-        
-        if std::path::Path::new(&style_str).is_file() {
-        
-            return Ok(Arc::new(osmquadtree_geometry::GeometryStyle::from_file(&style_str)?));
-        } else {
-            
-            match osmquadtree_geometry::GeometryStyle::from_json(&style_str) {
-                Ok(g) => { return Ok(Arc::new(g)); }
-                _ => {}
+            if style_in.is_none(py) {
+                return Ok(Arc::new(osmquadtree_geometry::GeometryStyle::default()));
             }
             
+            if let Ok(style_str) = style_in.extract::<String>(py) {
+                
+                if std::path::Path::new(&style_str).is_file() {
+                
+                    return Ok(Arc::new(osmquadtree_geometry::GeometryStyle::from_file(&style_str)?));
+                } else {
+                    
+                    match osmquadtree_geometry::GeometryStyle::from_json(&style_str) {
+                        Ok(g) => { return Ok(Arc::new(g)); }
+                        _ => {}
+                    }
+                    
+                }
+            }
         }
     }
     
     Err(PyRuntimeError::new_err("can't handle given style argument"))
 }
 
-fn prep_minzoom(py: Python, minzoom_in: PyObject) -> PyResult<Option<osmquadtree_geometry::MinZoomSpec>> {
+fn prep_minzoom(py: Python, minzoom: Option<PyObject>) -> PyResult<Option<osmquadtree_geometry::MinZoomSpec>> {
     
-    if minzoom_in.is_none(py) { 
-        Ok(None)
-    } else if let Ok((ss,mz)) = minzoom_in.extract::<(String,Option<i64>)>(py) {
-        if &ss == "default" {
-            Ok(Some(osmquadtree_geometry::MinZoomSpec::default(5.0, mz)))
-        } else {
-            Ok(Some(osmquadtree_geometry::MinZoomSpec::from_reader(5.0, mz, ss.as_bytes())?))
+    match minzoom {
+        None => Ok(None),
+        Some(minzoom_in) => {
+    
+            if minzoom_in.is_none(py) { 
+                Ok(None)
+            } else if let Ok((ss,mz)) = minzoom_in.extract::<(String,Option<i64>)>(py) {
+                if &ss == "default" {
+                    Ok(Some(osmquadtree_geometry::MinZoomSpec::default(5.0, mz)))
+                } else {
+                    Ok(Some(osmquadtree_geometry::MinZoomSpec::from_reader(5.0, mz, ss.as_bytes())?))
+                }
+            } else {
+                Err(PyRuntimeError::new_err("can't handle given minzoom argument"))
+            }
         }
-    } else {
-        Err(PyRuntimeError::new_err("can't handle given minzoom argument"))
     }
 }
 
 #[pyfunction]
+#[pyo3(signature = (prfx, filter=None, timestamp=None, minzoom_in=None, style_in=None, numchan=4))]
 fn process_geometry(py: Python,
     prfx: &str,
-    filter: PyObject,
+    filter: Option<PyObject>,
     timestamp: Option<&str>,
-    minzoom_in: PyObject,
-    style_in: PyObject,
+    minzoom_in: Option<PyObject>,
+    style_in: Option<PyObject>,
     numchan: usize,
 ) -> PyResult<Option<Vec<GeometryBlock>>> {
     
@@ -827,7 +827,7 @@ pub fn default_minzoom_values(_py: Python) -> PyResult<String> {
     
 
 
-pub(crate) fn wrap_geometry(m: &PyModule) -> PyResult<()> {
+pub(crate) fn wrap_geometry(m: &Bound<'_, PyModule>) -> PyResult<()> {
     
     m.add_class::<PointGeometry>()?;
     m.add_class::<LinestringGeometry>()?;

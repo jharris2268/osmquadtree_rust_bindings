@@ -1,4 +1,4 @@
-from .rust import call_count
+from .rust import call_count, timestamp_string
 import time, os
 
 default_numchan = os.cpu_count()
@@ -231,11 +231,11 @@ class ReadFileBlocksParallel:
     def prep_bbox_filter(self, numchan=default_numchan):
         return self.inner.prep_bbox_filter(numchan)
     
-    def write_merged(self, outfn, ids_obj=None, numchan=default_numchan):
-        self.inner.write_merged(outfn, ids_obj, numchan)
+    def write_merged(self, outfn, ids_obj=None, compression_type=('ZlibLevel',6), numchan=default_numchan):
+        self.inner.write_merged(outfn, ids_obj, compression_type, numchan)
     
-    def write_merged_sort(self, outfn, ids_obj=None, inmem=False, numchan=default_numchan):
-        self.inner.write_merged_sort(outfn, ids_obj, inmem, numchan)
+    def write_merged_sort(self, outfn, ids_obj=None, inmem=False, compression_type=('ZlibLevel',6), numchan=default_numchan):
+        self.inner.write_merged_sort(outfn, ids_obj, inmem, compression_type, numchan)
     
     def __repr__(self):
         return repr(self.inner)
